@@ -33,17 +33,10 @@
                 <p class="text-indigo-200 text-xs sm:text-sm mt-1 hidden sm:block">Cada período fica salvo. Trocar de período não apaga o anterior.</p>
             </div>
             <div class="grid grid-cols-2 sm:flex sm:flex-wrap sm:items-center gap-2 bg-indigo-950/60 p-2 rounded-xl border border-indigo-700/50">
-                <label class="col-span-2 sm:col-auto flex items-center gap-2 min-w-0">
-                    <span class="text-[11px] font-semibold text-indigo-300 uppercase shrink-0">Mês</span>
-                    <input type="month" id="selectMonth" onchange="selectOrCreateMonth(this.value)" class="tap flex-1 min-w-[11rem] bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600 focus:outline-none focus:ring-2 focus:ring-rose-400 text-sm font-medium">
-                </label>
                 <label class="col-span-2 sm:col-auto flex items-center gap-2 min-w-0 flex-1">
                     <span class="text-[11px] font-semibold text-indigo-300 uppercase shrink-0">Período</span>
                     <select id="selectPeriod" onchange="changePeriod(this.value)" class="tap flex-1 min-w-0 bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600 focus:outline-none focus:ring-2 focus:ring-rose-400 text-sm font-medium"></select>
                 </label>
-                <button type="button" onclick="toggleNewPeriod(true)" class="tap bg-sky-500 hover:bg-sky-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5">
-                    <i class="fa-solid fa-plus"></i> Novo
-                </button>
                 <button type="button" id="btnClosePeriod" onclick="togglePeriodStatus()" class="tap bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
                     Fechar
                 </button>
@@ -53,24 +46,6 @@
                 <button type="button" onclick="copyWhatsAppSummary()" class="tap bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 shadow-sm">
                     <i class="fa-brands fa-whatsapp"></i> WhatsApp
                 </button>
-            </div>
-            <div id="newPeriodBox" class="hidden bg-indigo-950/80 border border-indigo-700 rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <label class="flex flex-col gap-1">
-                    <span class="text-[11px] font-semibold text-indigo-300 uppercase">De</span>
-                    <input type="date" id="periodStart" class="tap bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600">
-                </label>
-                <label class="flex flex-col gap-1">
-                    <span class="text-[11px] font-semibold text-indigo-300 uppercase">Até</span>
-                    <input type="date" id="periodEnd" class="tap bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600">
-                </label>
-                <label class="col-span-2 sm:col-span-1 flex flex-col gap-1">
-                    <span class="text-[11px] font-semibold text-indigo-300 uppercase">Nome (opcional)</span>
-                    <input type="text" id="periodLabel" placeholder="Ex.: Quinzena 2" class="tap bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600">
-                </label>
-                <div class="col-span-2 sm:col-span-1 flex items-end gap-2">
-                    <button type="button" onclick="createPeriod()" class="tap flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-semibold">Criar período</button>
-                    <button type="button" onclick="toggleNewPeriod(false)" class="tap px-3 py-2 rounded-lg text-sm font-semibold bg-indigo-800 text-indigo-100">Cancelar</button>
-                </div>
             </div>
         </div>
     </header>
@@ -207,27 +182,23 @@
         }
 
         function boot() {
-            const today = new Date();
-            const start = new Date(today.getFullYear(), today.getMonth(), 1);
-            const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-            document.getElementById('selectMonth').value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-            document.getElementById('periodStart').value = toIso(start);
-            document.getElementById('periodEnd').value = toIso(end);
             if (isFirebaseActive) {
                 db.ref(BOOK_KEY).on('value', (snapshot) => {
                     const data = snapshot.val();
                     if (data && (data.migrated || (data.periods && Object.keys(data.periods).length))) {
                         applyingRemote = true;
-                        applyBook(data);
+                        const added = applyBook(data);
                         applyingRemote = false;
+                        if (added) persistBook();
                     } else {
                         migrateLegacyThenInit();
                     }
                 });
             } else {
                 const local = localStorage.getItem(BOOK_KEY);
-                if (local) applyBook(JSON.parse(local));
-                else migrateLegacyThenInit();
+                if (local) {
+                    if (applyBook(JSON.parse(local))) persistBook();
+                } else migrateLegacyThenInit();
             }
         }
 
@@ -258,11 +229,11 @@
                     next.currentId = id;
                 });
                 book = next;
-                persistBook();
-                if (!book.currentId) {
-                    selectOrCreateMonth(document.getElementById('selectMonth').value || currentMonthKey());
-                    return;
+                ensureCatalogPeriods();
+                if (!book.currentId || !book.periods[book.currentId]) {
+                    book.currentId = `month_${currentMonthKey()}`;
                 }
+                persistBook();
                 renderAll();
             };
             if (isFirebaseActive) {
@@ -286,15 +257,12 @@
                 migrated: !!data.migrated
             };
             Object.values(book.periods).forEach((p) => { p.days = asArray(p.days).map(normalizeDay); });
+            const added = ensureCatalogPeriods();
             if (!book.currentId || !book.periods[book.currentId]) {
-                const first = listPeriods()[0];
-                book.currentId = first ? first.id : null;
-            }
-            if (!book.currentId) {
-                selectOrCreateMonth(document.getElementById('selectMonth').value || currentMonthKey());
-                return;
+                book.currentId = `month_${currentMonthKey()}`;
             }
             renderAll();
+            return added;
         }
 
         function currentPeriod() {
@@ -306,7 +274,35 @@
         }
 
         function listPeriods() {
-            return Object.values(book.periods || {}).sort((a, b) => String(b.start || '').localeCompare(String(a.start || '')));
+            return Object.values(book.periods || {}).sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')));
+        }
+
+        function ensureCatalogPeriods() {
+            let added = 0;
+            [2026, 2027].forEach((year) => {
+                for (let month = 1; month <= 12; month++) {
+                    const key = `${year}-${String(month).padStart(2, '0')}`;
+                    const id = `month_${key}`;
+                    if (book.periods[id]) continue;
+                    book.periods[id] = makeMonthPeriod(key);
+                    added += 1;
+                }
+            });
+            return added > 0;
+        }
+
+        function makeMonthPeriod(monthKey) {
+            const [y, m] = monthKey.split('-').map(Number);
+            const last = new Date(y, m, 0).getDate();
+            return {
+                id: `month_${monthKey}`,
+                label: monthLabel(monthKey),
+                start: `${monthKey}-01`,
+                end: `${monthKey}-${String(last).padStart(2, '0')}`,
+                status: 'OPEN',
+                createdAt: Date.now(),
+                days: buildCalendarMonth(monthKey)
+            };
         }
 
         function persistBook() {
@@ -354,69 +350,12 @@
             };
         }
 
-        function toggleNewPeriod(show) {
-            document.getElementById('newPeriodBox').classList.toggle('hidden', !show);
-        }
-
-        function createPeriod() {
-            const start = document.getElementById('periodStart').value;
-            const end = document.getElementById('periodEnd').value;
-            const custom = document.getElementById('periodLabel').value.trim();
-            if (!start || !end) {
-                alert('Informe a data inicial e a final.');
-                return;
-            }
-            if (end < start) {
-                alert('A data final deve ser maior ou igual à inicial.');
-                return;
-            }
-            const id = `p_${start.replace(/-/g, '')}_${end.replace(/-/g, '')}_${Date.now()}`;
-            const period = {
-                id,
-                label: custom || `${fmtDate(start)} a ${fmtDate(end)}`,
-                start,
-                end,
-                status: 'OPEN',
-                createdAt: Date.now(),
-                days: buildEmptyDays(start, end)
-            };
-            book.periods[id] = period;
-            book.currentId = id;
-            persistBook();
-            toggleNewPeriod(false);
-            document.getElementById('periodLabel').value = '';
-            renderAll();
-        }
-
         function currentMonthKey() {
             const today = new Date();
-            return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-        }
-
-        function selectOrCreateMonth(monthKey) {
-            if (!/^\d{4}-\d{2}$/.test(monthKey || '')) return;
-            const existing = Object.values(book.periods || {}).find((p) =>
-                p.id === `month_${monthKey}` || ((p.start || '').slice(0, 7) === monthKey && (p.end || '').slice(0, 7) === monthKey)
-            );
-            if (existing) {
-                changePeriod(existing.id);
-                return;
-            }
-            const [y, m] = monthKey.split('-').map(Number);
-            const last = new Date(y, m, 0).getDate();
-            const id = `month_${monthKey}`;
-            book.periods[id] = {
-                id,
-                label: monthLabel(monthKey),
-                start: `${monthKey}-01`,
-                end: `${monthKey}-${String(last).padStart(2, '0')}`,
-                status: 'OPEN',
-                createdAt: Date.now(),
-                days: buildCalendarMonth(monthKey)
-            };
-            book.currentId = id;
-            persistBook();
-            renderAll();
+            const year = today.getFullYear();
+            const bounded = year < 2026 ? 2026 : year > 2027 ? 2027 : year;
+            const month = bounded === year ? today.getMonth() + 1 : 1;
+            return `${bounded}-${String(month).padStart(2, '0')}`;
         }
 
         function buildCalendarMonth(monthKey) {
@@ -528,9 +467,6 @@
             const period = currentPeriod();
             daysData = period ? asArray(period.days).map(normalizeDay) : [];
             document.getElementById('defaultCaregiverName').value = book.defaultCaregiver || 'Maria';
-            const monthInput = document.getElementById('selectMonth');
-            if (period?.start) monthInput.value = period.start.slice(0, 7);
-            else if (!monthInput.value) monthInput.value = currentMonthKey();
             renderPeriodSelect();
             renderHistory();
             renderTable();
@@ -558,14 +494,25 @@
         function renderPeriodSelect() {
             const select = document.getElementById('selectPeriod');
             const periods = listPeriods();
-            select.innerHTML = periods.length
-                ? periods.map((p) => `<option value="${esc(p.id)}" ${p.id === book.currentId ? 'selected' : ''}>${esc(p.label)} ${p.status === 'CLOSED' ? '(fechado)' : ''}</option>`).join('')
-                : '<option value="">Nenhum período ainda</option>';
+            const years = {};
+            periods.forEach((p) => {
+                const year = (p.start || '').slice(0, 4) || 'Outros';
+                if (!years[year]) years[year] = [];
+                years[year].push(p);
+            });
+            select.innerHTML = Object.keys(years).sort().map((year) => {
+                const opts = years[year].map((p) =>
+                    `<option value="${esc(p.id)}" ${p.id === book.currentId ? 'selected' : ''}>${esc(p.label)}${p.status === 'CLOSED' ? ' (fechado)' : ''}</option>`
+                ).join('');
+                return `<optgroup label="${esc(year)}">${opts}</optgroup>`;
+            }).join('') || '<option value="">Nenhum período ainda</option>';
         }
 
         function renderHistory() {
             const strip = document.getElementById('historyStrip');
-            const periods = listPeriods();
+            const periods = listPeriods().filter((p) =>
+                p.id === book.currentId || periodTotals(p.days).general > 0
+            );
             strip.innerHTML = periods.map((p) => {
                 const totals = periodTotals(p.days);
                 const on = p.id === book.currentId;
