@@ -33,6 +33,10 @@
                 <p class="text-indigo-200 text-xs sm:text-sm mt-1 hidden sm:block">Cada período fica salvo. Trocar de período não apaga o anterior.</p>
             </div>
             <div class="grid grid-cols-2 sm:flex sm:flex-wrap sm:items-center gap-2 bg-indigo-950/60 p-2 rounded-xl border border-indigo-700/50">
+                <label class="col-span-2 sm:col-auto flex items-center gap-2 min-w-0">
+                    <span class="text-[11px] font-semibold text-indigo-300 uppercase shrink-0">Mês</span>
+                    <input type="month" id="selectMonth" onchange="selectOrCreateMonth(this.value)" class="tap flex-1 min-w-[11rem] bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600 focus:outline-none focus:ring-2 focus:ring-rose-400 text-sm font-medium">
+                </label>
                 <label class="col-span-2 sm:col-auto flex items-center gap-2 min-w-0 flex-1">
                     <span class="text-[11px] font-semibold text-indigo-300 uppercase shrink-0">Período</span>
                     <select id="selectPeriod" onchange="changePeriod(this.value)" class="tap flex-1 min-w-0 bg-indigo-900 text-white px-3 py-2 rounded-lg border border-indigo-600 focus:outline-none focus:ring-2 focus:ring-rose-400 text-sm font-medium"></select>
@@ -82,7 +86,7 @@
 
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
             <div class="bg-white rounded-2xl p-3 sm:p-5 border border-slate-200 shadow-sm">
-                <span class="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider block mb-1">Total do período</span>
+                <span class="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider block mb-1">Total do mês</span>
                 <div class="text-xl sm:text-3xl font-extrabold text-slate-900 break-words" id="totalGeneral">R$ 0,00</div>
                 <div class="text-[11px] text-slate-500 mt-1.5" id="totalDaysSummary">0 lançamentos</div>
             </div>
@@ -206,6 +210,7 @@
             const today = new Date();
             const start = new Date(today.getFullYear(), today.getMonth(), 1);
             const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+            document.getElementById('selectMonth').value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
             document.getElementById('periodStart').value = toIso(start);
             document.getElementById('periodEnd').value = toIso(end);
             if (isFirebaseActive) {
@@ -254,6 +259,10 @@
                 });
                 book = next;
                 persistBook();
+                if (!book.currentId) {
+                    selectOrCreateMonth(document.getElementById('selectMonth').value || currentMonthKey());
+                    return;
+                }
                 renderAll();
             };
             if (isFirebaseActive) {
@@ -280,6 +289,10 @@
             if (!book.currentId || !book.periods[book.currentId]) {
                 const first = listPeriods()[0];
                 book.currentId = first ? first.id : null;
+            }
+            if (!book.currentId) {
+                selectOrCreateMonth(document.getElementById('selectMonth').value || currentMonthKey());
+                return;
             }
             renderAll();
         }
@@ -373,6 +386,50 @@
             toggleNewPeriod(false);
             document.getElementById('periodLabel').value = '';
             renderAll();
+        }
+
+        function currentMonthKey() {
+            const today = new Date();
+            return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+        }
+
+        function selectOrCreateMonth(monthKey) {
+            if (!/^\d{4}-\d{2}$/.test(monthKey || '')) return;
+            const existing = Object.values(book.periods || {}).find((p) =>
+                p.id === `month_${monthKey}` || ((p.start || '').slice(0, 7) === monthKey && (p.end || '').slice(0, 7) === monthKey)
+            );
+            if (existing) {
+                changePeriod(existing.id);
+                return;
+            }
+            const [y, m] = monthKey.split('-').map(Number);
+            const last = new Date(y, m, 0).getDate();
+            const id = `month_${monthKey}`;
+            book.periods[id] = {
+                id,
+                label: monthLabel(monthKey),
+                start: `${monthKey}-01`,
+                end: `${monthKey}-${String(last).padStart(2, '0')}`,
+                status: 'OPEN',
+                createdAt: Date.now(),
+                days: buildCalendarMonth(monthKey)
+            };
+            book.currentId = id;
+            persistBook();
+            renderAll();
+        }
+
+        function buildCalendarMonth(monthKey) {
+            const [y, m] = monthKey.split('-').map(Number);
+            const caregiver = document.getElementById('defaultCaregiverName')?.value || book.defaultCaregiver || 'Maria';
+            const last = new Date(y, m, 0).getDate();
+            const days = [];
+            for (let day = 1; day <= last; day++) {
+                const date = new Date(y, m - 1, day);
+                const weekend = date.getDay() === 0 || date.getDay() === 6;
+                days.push(makeDay(date, caregiver, weekend, true));
+            }
+            return days;
         }
 
         function changePeriod(id) {
@@ -471,6 +528,9 @@
             const period = currentPeriod();
             daysData = period ? asArray(period.days).map(normalizeDay) : [];
             document.getElementById('defaultCaregiverName').value = book.defaultCaregiver || 'Maria';
+            const monthInput = document.getElementById('selectMonth');
+            if (period?.start) monthInput.value = period.start.slice(0, 7);
+            else if (!monthInput.value) monthInput.value = currentMonthKey();
             renderPeriodSelect();
             renderHistory();
             renderTable();
