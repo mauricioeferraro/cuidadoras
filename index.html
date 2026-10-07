@@ -18,6 +18,10 @@
             .desktop-table { display: table !important; }
             .mobile-list { display: none !important; }
             body { background: #fff !important; font-size: 11px; }
+            body[data-view="pagamentos"] #summaryCards,
+            body[data-view="pagamentos"] #viewLancamentos { display: none !important; }
+            body[data-view="pagamentos"] #viewPagamentos { display: block !important; }
+            body[data-view="lancamentos"] #viewPagamentos { display: none !important; }
         }
     </style>
 </head>
@@ -59,7 +63,7 @@
 
         <div id="historyStrip" class="no-print flex gap-2 overflow-x-auto pb-1"></div>
 
-        <div class="flex flex-wrap gap-3">
+        <div id="summaryCards" class="flex flex-wrap gap-3">
             <div class="bg-white rounded-2xl px-5 py-4 border border-slate-200 shadow-sm w-fit">
                 <span class="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Total do mês</span>
                 <div class="text-3xl font-black text-slate-900 tracking-tight mt-1" id="totalGeneral">R$ 0,00</div>
@@ -91,6 +95,12 @@
             </div>
         </div>
 
+        <div class="grid grid-cols-2 gap-2 no-print" role="tablist">
+            <button type="button" id="tabLancamentos" onclick="switchView('lancamentos')" class="tap px-3 py-2 rounded-xl text-sm font-semibold bg-indigo-900 text-white">Lançamentos</button>
+            <button type="button" id="tabPagamentos" onclick="switchView('pagamentos')" class="tap px-3 py-2 rounded-xl text-sm font-semibold bg-white text-slate-600 border border-slate-200">Pagamentos</button>
+        </div>
+
+        <div id="viewLancamentos">
         <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div class="p-3 sm:p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 no-print">
                 <div>
@@ -143,6 +153,25 @@
                 </div>
             </div>
         </div>
+        </div>
+
+        <div id="viewPagamentos" class="hidden">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="p-4 sm:p-5 border-b border-slate-200 bg-slate-50">
+                    <h2 class="font-bold text-slate-800 flex items-center gap-2">
+                        <i class="fa-solid fa-money-bill-wave text-indigo-600"></i>
+                        Pagamento no fim do mês
+                    </h2>
+                    <p id="payIntro" class="text-xs text-slate-500 mt-1">A soma dos plantões de cada cuidadora, paga no último dia do mês.</p>
+                </div>
+                <div id="payWhen" class="px-4 sm:px-5 py-4 border-b border-slate-100"></div>
+                <div id="payList" class="p-3 sm:p-5 space-y-3"></div>
+                <div class="px-4 sm:px-5 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
+                    <span class="text-[11px] font-bold text-slate-500 uppercase">Total a pagar às cuidadoras</span>
+                    <span id="payTotal" class="text-2xl font-black text-indigo-900">R$ 0,00</span>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -174,6 +203,7 @@
         let book = emptyBook();
         let daysData = [];
         let applyingRemote = false;
+        let currentView = 'lancamentos';
 
         document.addEventListener("DOMContentLoaded", boot);
 
@@ -489,6 +519,7 @@
                 const el = document.getElementById(id);
                 if (el) el.disabled = !period || closed;
             });
+            switchView(currentView);
         }
 
         function renderPeriodSelect() {
@@ -783,6 +814,7 @@
             if (shiftType === 'day') daysData[index].dayShift.caregiver = name;
             if (shiftType === 'night') daysData[index].nightShift.caregiver = name;
             syncDaysToPeriod();
+            renderPayments();
             persistCurrentPeriod();
         }
 
@@ -807,6 +839,180 @@
             document.getElementById('totalLuma').innerText = formatMoney(totals.pool / 2);
             document.getElementById('totalDaphine').innerText = formatMoney(totals.pool / 2);
             document.getElementById('totalDaysSummary').innerText = `${totals.count} lançamentos`;
+            renderPayments();
+        }
+
+        function switchView(view) {
+            currentView = view === 'pagamentos' ? 'pagamentos' : 'lancamentos';
+            document.body.dataset.view = currentView;
+            document.getElementById('viewLancamentos').classList.toggle('hidden', currentView !== 'lancamentos');
+            document.getElementById('viewPagamentos').classList.toggle('hidden', currentView !== 'pagamentos');
+            const on = 'tap px-3 py-2 rounded-xl text-sm font-semibold bg-indigo-900 text-white';
+            const off = 'tap px-3 py-2 rounded-xl text-sm font-semibold bg-white text-slate-600 border border-slate-200';
+            document.getElementById('tabLancamentos').className = currentView === 'lancamentos' ? on : off;
+            document.getElementById('tabPagamentos').className = currentView === 'pagamentos' ? on : off;
+        }
+
+        function caregiverKey(name) {
+            return String(name || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR') || 'sem nome';
+        }
+
+        function caregiverPayments(days) {
+            const map = new Map();
+            asArray(days).forEach((item) => {
+                if (item.hasDay) addCaregiverShift(map, item, 'day');
+                if (item.hasNight) addCaregiverShift(map, item, 'night');
+            });
+            return Array.from(map.values()).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'pt-BR'));
+        }
+
+        function addCaregiverShift(map, item, kind) {
+            const shift = kind === 'day' ? item.dayShift : item.nightShift;
+            const raw = String(shift.caregiver || '').trim().replace(/\s+/g, ' ');
+            const key = caregiverKey(raw);
+            if (!map.has(key)) {
+                map.set(key, {
+                    name: raw || 'Sem nome',
+                    names: {},
+                    total: 0,
+                    hours: 0,
+                    days: 0,
+                    nights: 0,
+                    faltas: 0,
+                    shifts: []
+                });
+            }
+            const row = map.get(key);
+            const label = raw || 'Sem nome';
+            row.names[label] = (row.names[label] || 0) + 1;
+            const value = Number(shift.customValue || 0);
+            const falta = shift.status === 'falta';
+            row.total += value;
+            if (falta) row.faltas += 1;
+            else {
+                row.hours += Number(shift.hours || 0);
+                if (kind === 'day') row.days += 1;
+                else row.nights += 1;
+            }
+            row.shifts.push({
+                iso: item.iso || '',
+                dateStr: item.dateStr,
+                weekday: item.dayOfWeekName,
+                kind,
+                status: shift.status,
+                hours: Number(shift.hours || 0),
+                value
+            });
+        }
+
+        function preferredName(row) {
+            return Object.entries(row.names).sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0][0];
+        }
+
+        function daysUntil(iso) {
+            const today = parseIso(toIso(new Date()));
+            const due = parseIso(iso);
+            return Math.round((due - today) / 86400000);
+        }
+
+        function longDate(iso) {
+            return parseIso(iso).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
+        }
+
+        function plural(n, one, many) {
+            return `${n} ${n === 1 ? one : many}`;
+        }
+
+        function formatHours(hours) {
+            const n = Math.round((Number(hours) || 0) * 10) / 10;
+            return n.toLocaleString('pt-BR');
+        }
+
+        function paymentWhen(iso) {
+            const date = longDate(iso);
+            const left = daysUntil(iso);
+            if (left > 1) return { text: `Pagar em ${date}`, hint: `faltam ${plural(left, 'dia', 'dias')}`, tone: left <= 7 ? 'soon' : 'ok' };
+            if (left === 1) return { text: `Pagar amanhã`, hint: date, tone: 'soon' };
+            if (left === 0) return { text: 'Pagar hoje', hint: date, tone: 'soon' };
+            const late = Math.abs(left);
+            return { text: `Fim do mês em ${date}`, hint: `há ${plural(late, 'dia', 'dias')}`, tone: 'late' };
+        }
+
+        function shiftStatusLabel(shift) {
+            if (shift.status === 'falta') return 'Falta';
+            if (shift.status === 'parcial') return `Parcial ${formatHours(shift.hours)}h`;
+            return `${formatHours(shift.hours)}h`;
+        }
+
+        function renderPayments() {
+            const list = document.getElementById('payList');
+            const when = document.getElementById('payWhen');
+            const intro = document.getElementById('payIntro');
+            const totalEl = document.getElementById('payTotal');
+            if (!list || !when || !intro || !totalEl) return;
+            const period = currentPeriod();
+            if (!period) {
+                intro.textContent = 'Escolha um período para ver quanto pagar a cada cuidadora.';
+                when.innerHTML = '';
+                list.innerHTML = '<p class="text-sm text-slate-500">Nenhum período selecionado.</p>';
+                totalEl.textContent = formatMoney(0);
+                return;
+            }
+            const due = paymentWhen(period.end);
+            const tone = due.tone === 'late'
+                ? 'bg-rose-50 border-rose-200 text-rose-950'
+                : due.tone === 'soon'
+                    ? 'bg-amber-50 border-amber-200 text-amber-950'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-950';
+            intro.textContent = `${period.label}. Cada cuidadora recebe, no último dia do mês, a soma dos plantões lançados.`;
+            when.innerHTML = `
+                <div class="rounded-2xl border px-4 py-4 ${tone}">
+                    <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">Quando pagar</div>
+                    <div class="text-xl sm:text-2xl font-black tracking-tight mt-1">${esc(due.text)}</div>
+                    <div class="text-sm font-medium mt-1">${esc(due.hint)}</div>
+                </div>
+            `;
+            const rows = caregiverPayments(daysData).filter((row) => row.total > 0.009);
+            rows.forEach((row) => { row.name = preferredName(row); });
+            const total = rows.reduce((sum, row) => sum + row.total, 0);
+            totalEl.textContent = formatMoney(total);
+            if (!rows.length) {
+                list.innerHTML = '<p class="text-sm text-slate-500">Nenhum plantão com valor neste período.</p>';
+                return;
+            }
+            list.innerHTML = rows.map((row) => {
+                const bits = [];
+                if (row.days) bits.push(plural(row.days, 'dia', 'dias'));
+                if (row.nights) bits.push(plural(row.nights, 'noite', 'noites'));
+                bits.push(`${formatHours(row.hours)} h`);
+                if (row.faltas) bits.push(plural(row.faltas, 'falta', 'faltas'));
+                const shifts = row.shifts.slice().sort((a, b) => a.iso.localeCompare(b.iso) || (a.kind === 'night') - (b.kind === 'night'));
+                const lines = shifts.map((shift) => {
+                    const kind = shift.kind === 'day' ? 'Dia' : 'Noite';
+                    const muted = shift.status === 'falta' ? 'text-rose-600' : 'text-slate-600';
+                    return `<li class="flex items-center justify-between gap-3 py-1.5 border-b border-slate-100 last:border-0 ${muted}">
+                        <span>${esc(shift.dateStr)} · ${esc(shift.weekday)} · ${kind} · ${esc(shiftStatusLabel(shift))}</span>
+                        <span class="font-semibold text-slate-800 shrink-0">${formatMoney(shift.value)}</span>
+                    </li>`;
+                }).join('');
+                return `<article class="rounded-2xl border border-slate-200 p-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <h3 class="text-lg font-bold text-slate-900 truncate">${esc(row.name)}</h3>
+                            <p class="text-xs text-slate-500 mt-1">${esc(bits.join(' · '))}</p>
+                            <p class="text-xs font-semibold text-indigo-800 mt-2">Pagar em ${esc(fmtDate(period.end))}</p>
+                        </div>
+                        <div class="text-right shrink-0">
+                            <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400">A pagar</div>
+                            <div class="text-2xl font-black text-slate-900">${formatMoney(row.total)}</div>
+                        </div>
+                    </div>
+                    <details class="mt-3">
+                        <summary class="tap cursor-pointer text-sm font-semibold text-indigo-700">Ver plantões</summary>
+                        <ul class="mt-2 text-sm">${lines}</ul>
+                    </details>
+                </article>`;
+            }).join('');
         }
 
         function formatMoney(val) {
